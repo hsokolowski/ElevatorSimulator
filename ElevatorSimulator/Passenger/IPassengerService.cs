@@ -2,7 +2,7 @@
 
 public interface IPassengerService
 {
-    void AddPassenger(int currentFloor, int destinationFloor);
+    void AddPassenger(Model.Passenger passenger);
     List<Model.Passenger> GetPassengersAtFloor(int floor);
-    Task AssignPassengersToElevator(int elevatorId, List<Model.Passenger> passengers);
+    void RemovePassengersFromFloor(int floor, List<Model.Passenger> passengers);
 }

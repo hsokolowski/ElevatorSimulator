@@ -2,18 +2,12 @@
 
 public interface IConfigurationService
 {
-    void SetNumberOfFloors(int floors);
-    int GetNumberOfFloors();
+    int NumberOfFloors { get; set; }
+    int NumberOfElevators { get; set; }
+    int LoadUnloadTime { get; set; }
 
-    void SetNumberOfElevators(int count);
-    int GetNumberOfElevators();
-
-    void SetSpeed(int elevatorId, int speed);
     int GetSpeed(int elevatorId);
-
-    void SetElevatorCapacity(int elevatorId, int capacity);
+    void SetSpeed(int elevatorId, int speed);
     int GetElevatorCapacity(int elevatorId);
-
-    void SetLoadUnloadTime(int timeInSeconds); // Czas załadunku/rozładunku dla wszystkich wind
-    int GetLoadUnloadTime();
+    void SetElevatorCapacity(int elevatorId, int capacity);
 }

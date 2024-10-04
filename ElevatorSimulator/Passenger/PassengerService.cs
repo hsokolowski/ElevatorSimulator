@@ -2,24 +2,15 @@
 
 public class PassengerService : IPassengerService
 {
-    private readonly Dictionary<int, List<Model.Passenger>> _passengersAtFloors = new();
+    private Dictionary<int, List<Model.Passenger>> _passengersAtFloors = new Dictionary<int, List<Model.Passenger>>();
 
-    public void AddPassenger(int currentFloor, int destinationFloor)
+    public void AddPassenger(Model.Passenger passenger)
     {
-        var passenger = new Model.Passenger
+        if (!_passengersAtFloors.ContainsKey(passenger.CurrentFloor))
         {
-            CurrentFloor = currentFloor,
-            DestinationFloor = destinationFloor,
-            TimeToLoad = 1, // domyślny czas wsiadania
-            TimeToUnload = 1 // domyślny czas wysiadania
-        };
-
-        if (!_passengersAtFloors.ContainsKey(currentFloor))
-        {
-            _passengersAtFloors[currentFloor] = new List<Model.Passenger>();
+            _passengersAtFloors[passenger.CurrentFloor] = new List<Model.Passenger>();
         }
-
-        _passengersAtFloors[currentFloor].Add(passenger);
+        _passengersAtFloors[passenger.CurrentFloor].Add(passenger);
     }
 
     public List<Model.Passenger> GetPassengersAtFloor(int floor)
@@ -27,9 +18,14 @@ public class PassengerService : IPassengerService
         return _passengersAtFloors.ContainsKey(floor) ? _passengersAtFloors[floor] : new List<Model.Passenger>();
     }
 
-    public async Task AssignPassengersToElevator(int elevatorId, List<Model.Passenger> passengers)
+    public void RemovePassengersFromFloor(int floor, List<Model.Passenger> passengers)
     {
-        // Implementacja przydzielania pasażerów do windy
-        // Można to połączyć z serwisem zarządzającym windami (ElevatorControlService)
+        if (_passengersAtFloors.ContainsKey(floor))
+        {
+            foreach (var passenger in passengers)
+            {
+                _passengersAtFloors[floor].Remove(passenger);
+            }
+        }
     }
 }
