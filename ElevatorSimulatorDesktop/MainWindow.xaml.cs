@@ -1,11 +1,13 @@
 ﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using EvelatorSimulator;
-using EvelatorSimulator.Config;
-using EvelatorSimulator.Passenger;
+using ElevatorSimulator;
+using ElevatorSimulator.Config;
+using ElevatorSimulator.Model;
+using ElevatorSimulator.Strategy;
 
 namespace ElevatorSimulatorDesktop;
 
@@ -14,15 +16,27 @@ namespace ElevatorSimulatorDesktop;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private readonly IElevatorSystem _elevatorSystemFacade;
+    private ElevatorSystem _elevatorSystem;
     private DispatcherTimer _timer;
+    private double _totalWaitTime = 0;
+    private int _totalRequests = 0;
+    
+    private Dictionary<int, ElevatorLogWindow> _elevatorLogWindows = new Dictionary<int, ElevatorLogWindow>();
+
+    private IElevatorAssignmentStrategy _currentStrategy;
     
     public MainWindow()
     {
         InitializeComponent();
-        _elevatorSystemFacade = new ElevatorSystem(new ConfigurationService(), new PassengerService());
-        _elevatorSystemFacade.InitializeSystem();
 
+        var configService = new ConfigurationService();
+        
+        _currentStrategy = new ClosestIdleElevatorStrategy();
+        _elevatorSystem = new ElevatorSystem(configService, _currentStrategy);
+        _elevatorSystem.InitializeSystem();
+        _elevatorSystem.ElevatorRequestCompleted += ElevatorSystem_ElevatorRequestCompleted;
+    
+        InitializeElevatorLogs();
         InitializeFloorButtons();
         InitializeElevatorSelector();
 
@@ -32,59 +46,68 @@ public partial class MainWindow : Window
         };
         _timer.Tick += UpdateElevators;
         _timer.Start();
+    }
 
-        UpdateLabels();
+    
+    private void InitializeElevatorLogs()
+    {
+        foreach (var elevator in _elevatorSystem.GetElevators())
+        {
+            var logWindow = new ElevatorLogWindow(elevator.Id);
+            _elevatorLogWindows[elevator.Id] = logWindow;
+            elevator.ElevatorLog += Elevator_ElevatorLog;
+            logWindow.Show();
+        }
     }
     
-    private void InitializeElevatorSelector()
+    private void Elevator_ElevatorLog(object sender, string e)
     {
-        ElevatorSelector.Items.Clear();
-        var elevators = _elevatorSystemFacade.GetElevators();
-        foreach (var elevator in elevators)
+        var elevator = sender as IElevator;
+        if (elevator != null && _elevatorLogWindows.ContainsKey(elevator.Id))
         {
-            ElevatorSelector.Items.Add($"Elevator {elevator.Id}");
+            _elevatorLogWindows[elevator.Id].AppendLog(e);
         }
     }
     
     protected override void OnClosing(CancelEventArgs e)
     {
-        _elevatorSystemFacade.ShutdownSystem();
+        _elevatorSystem.ShutdownSystem();
         base.OnClosing(e);
     }
 
     private void InitializeFloorButtons()
     {
-        FloorButtonPanel.Children.Clear();
-        for (int i = _elevatorSystemFacade.Configuration.NumberOfFloors - 1; i >= 0; i--)
+        FloorPanel.Children.Clear();
+        for (int i = _elevatorSystem.Configuration.NumberOfFloors - 1; i >= 0; i--)
         {
             Button floorButton = new Button
             {
                 Content = $"Piętro {i}",
                 Tag = i,
                 Height = 30,
-                Width = 60,
+                Width = 100,
                 Margin = new Thickness(0, 5, 0, 0)
             };
             floorButton.Click += FloorButton_Click;
-            FloorButtonPanel.Children.Add(floorButton);
+            FloorPanel.Children.Add(floorButton);
         }
     }
-    
+
     private void FloorButton_Click(object sender, RoutedEventArgs e)
     {
-        int floor = int.Parse((sender as Button).Tag.ToString());
-        _elevatorSystemFacade.RequestElevator(floor);
+        int floor = (int)(sender as Button).Tag;
+        _elevatorSystem.RequestElevator(floor);
+        _totalRequests++;
     }
 
     private void UpdateElevators(object sender, EventArgs e)
     {
         ElevatorCanvas.Children.Clear();
-
         double canvasHeight = ElevatorCanvas.ActualHeight;
-        double floorHeight = canvasHeight / _elevatorSystemFacade.Configuration.NumberOfFloors;
+        double floorHeight = canvasHeight / _elevatorSystem.Configuration.NumberOfFloors;
 
-        // Rysowanie linii pięter i numerów
-        for (int i = 0; i < _elevatorSystemFacade.Configuration.NumberOfFloors; i++)
+        // Rysowanie pięter
+        for (int i = 0; i < _elevatorSystem.Configuration.NumberOfFloors; i++)
         {
             Line floorLine = new Line
             {
@@ -99,129 +122,156 @@ public partial class MainWindow : Window
 
             TextBlock floorLabel = new TextBlock
             {
-                Text = $"P{i}",
+                Text = $"Piętro {i}",
                 FontSize = 12,
                 Foreground = System.Windows.Media.Brushes.Black
             };
-            Canvas.SetLeft(floorLabel, 5); // Ustawienie labelki z lewej strony
-            Canvas.SetTop(floorLabel, canvasHeight - (i * floorHeight) - 20); // Ustawienie nad kreską
+            Canvas.SetLeft(floorLabel, 5);
+            Canvas.SetTop(floorLabel, canvasHeight - (i * floorHeight) - 20);
             ElevatorCanvas.Children.Add(floorLabel);
         }
 
         // Rysowanie wind
-        var elevators = _elevatorSystemFacade.GetElevators();
+        var elevators = _elevatorSystem.GetElevators();
+        int elevatorIndex = 0;
         foreach (var elevator in elevators)
         {
+            double elevatorLeft = elevatorIndex * 60 + 50;
             double elevatorTop = canvasHeight - (elevator.CurrentFloor * floorHeight) - 50;
 
             Rectangle elevatorRect = new Rectangle
             {
                 Width = 50,
                 Height = 50,
-                Margin = new Thickness(30,0,0,0),
-                Fill = System.Windows.Media.Brushes.DarkRed,
-                
+                Fill = System.Windows.Media.Brushes.DarkRed
             };
-            Canvas.SetLeft(elevatorRect, elevator.Id * 60);
+            Canvas.SetLeft(elevatorRect, elevatorLeft);
             Canvas.SetTop(elevatorRect, elevatorTop);
             ElevatorCanvas.Children.Add(elevatorRect);
 
-            // Optionally, display elevator status
+            // Wyświetlanie statusu
             TextBlock statusText = new TextBlock
             {
-                Margin = new Thickness(30,0,0,0),
-                Text = elevator.Status.ToString(),
+                Text = $"Winda {elevator.Id}\n{elevator.Status}",
                 FontSize = 10,
-                Foreground = System.Windows.Media.Brushes.Black
+                Foreground = System.Windows.Media.Brushes.White,
+                TextAlignment = TextAlignment.Center
             };
-            Canvas.SetLeft(statusText, elevator.Id * 60);
-            Canvas.SetTop(statusText, elevatorTop - 20);
+            Canvas.SetLeft(statusText, elevatorLeft);
+            Canvas.SetTop(statusText, elevatorTop + 10);
             ElevatorCanvas.Children.Add(statusText);
+
+            elevatorIndex++;
         }
     }
 
-    private void AddElevator_Click(object sender, RoutedEventArgs e)
+    private void InitializeElevatorSelector()
     {
-        _elevatorSystemFacade.Configuration.NumberOfElevators++;
-        _elevatorSystemFacade.ShutdownSystem();
-        _elevatorSystemFacade.InitializeSystem();
-        InitializeElevatorSelector();
-        UpdateLabels();
-    }
-
-    private void RemoveElevator_Click(object sender, RoutedEventArgs e)
-    {
-        if (_elevatorSystemFacade.Configuration.NumberOfElevators > 1)
+        ElevatorSelector.Items.Clear();
+        foreach (var elevator in _elevatorSystem.GetElevators())
         {
-            _elevatorSystemFacade.Configuration.NumberOfElevators--;
-            _elevatorSystemFacade.ShutdownSystem();
-            _elevatorSystemFacade.InitializeSystem();
-            UpdateLabels();
+            ElevatorSelector.Items.Add($"Winda {elevator.Id}");
+        }
+        ElevatorSelector.SelectedIndex = 0;
+    }
+
+    private void ElevatorSystem_ElevatorRequestCompleted(object sender, TimeSpan waitTime)
+    {
+        _totalWaitTime += waitTime.TotalSeconds;
+        _totalRequests++;
+
+        Console.WriteLine($"Żądanie obsłużone, czas oczekiwania: {waitTime.TotalSeconds} s");
+        
+        Dispatcher.Invoke(() =>
+        {
+            UpdateStatistics();
+        });
+    }
+    
+    private void UpdateStatistics()
+    {
+        if (_totalRequests > 0)
+        {
+            double averageWaitTime = _totalWaitTime / _totalRequests;
+            AverageWaitTimeLabel.Text = $"Średni czas oczekiwania: {averageWaitTime:F2} s";
         }
     }
 
-    private void AddFloor_Click(object sender, RoutedEventArgs e)
+    private void ApplySettings_Click(object sender, RoutedEventArgs e)
     {
-        _elevatorSystemFacade.Configuration.NumberOfFloors++;
+        int numberOfElevators = int.Parse(ElevatorCountInput.Text);
+        int numberOfFloors = int.Parse(FloorCountInput.Text);
+
+        // Usuń subskrypcje zdarzeń
+        _elevatorSystem.ElevatorRequestCompleted -= ElevatorSystem_ElevatorRequestCompleted;
+        foreach (var elevator in _elevatorSystem.GetElevators())
+        {
+            elevator.ElevatorLog -= Elevator_ElevatorLog;
+        }
+        _elevatorSystem.ShutdownSystem();
+
+        // Zamknij stare okna logów
+        foreach (var logWindow in _elevatorLogWindows.Values)
+        {
+            logWindow.Close();
+        }
+        _elevatorLogWindows.Clear();
+
+        _elevatorSystem.Configuration.NumberOfElevators = numberOfElevators;
+        _elevatorSystem.Configuration.NumberOfFloors = numberOfFloors;
+
+        _elevatorSystem = new ElevatorSystem(_elevatorSystem.Configuration, _currentStrategy);
+        _elevatorSystem.InitializeSystem();
+
+        // Ponownie subskrybuj zdarzenia
+        _elevatorSystem.ElevatorRequestCompleted += ElevatorSystem_ElevatorRequestCompleted;
+
         InitializeFloorButtons();
-        UpdateLabels();
+        InitializeElevatorSelector();
+        InitializeElevatorLogs();
+        UpdateElevators(null, null);
     }
 
-    private void RemoveFloor_Click(object sender, RoutedEventArgs e)
+    private void ChangeSpeed_Click(object sender, RoutedEventArgs e)
     {
-        if (_elevatorSystemFacade.Configuration.NumberOfFloors > 1)
+        int selectedIndex = ElevatorSelector.SelectedIndex;
+        if (selectedIndex >= 0)
         {
-            _elevatorSystemFacade.Configuration.NumberOfFloors--;
-            InitializeFloorButtons();
-            UpdateLabels();
+            int newSpeed = int.Parse(ElevatorSpeedInput.Text);
+            _elevatorSystem.Configuration.SetSpeed(selectedIndex, newSpeed);
+            var elevator = _elevatorSystem.GetElevators().FirstOrDefault(ev => ev.Id == selectedIndex);
+            elevator?.UpdateSpeed(newSpeed);
+        }
+    }
+    
+    private void IncreaseElevatorCount_Click(object sender, RoutedEventArgs e)
+    {
+        int currentCount = int.Parse(ElevatorCountInput.Text);
+        ElevatorCountInput.Text = (currentCount + 1).ToString();
+    }
+
+    private void DecreaseElevatorCount_Click(object sender, RoutedEventArgs e)
+    {
+        int currentCount = int.Parse(ElevatorCountInput.Text);
+        if (currentCount > 1)
+        {
+            ElevatorCountInput.Text = (currentCount - 1).ToString();
         }
     }
 
-    private void ApplyChangesToSelectedElevator_Click(object sender, RoutedEventArgs e)
+    private void IncreaseFloorCount_Click(object sender, RoutedEventArgs e)
     {
-        if (int.TryParse(ElevatorSpeedInput.Text, out int speed))
+        int currentCount = int.Parse(FloorCountInput.Text);
+        FloorCountInput.Text = (currentCount + 1).ToString();
+    }
+
+    private void DecreaseFloorCount_Click(object sender, RoutedEventArgs e)
+    {
+        int currentCount = int.Parse(FloorCountInput.Text);
+        if (currentCount > 1)
         {
-            int selectedIndex = ElevatorSelector.SelectedIndex;
-            if (selectedIndex >= 0)
-            {
-                _elevatorSystemFacade.Configuration.SetSpeed(selectedIndex, speed);
-                var elevator = _elevatorSystemFacade.GetElevators().FirstOrDefault(e => e.Id == selectedIndex);
-                if (elevator != null)
-                {
-                    elevator.UpdateSpeed(speed);
-                }
-            }
+            FloorCountInput.Text = (currentCount - 1).ToString();
         }
     }
 
-    private void ApplyChangesToAllElevators_Click(object sender, RoutedEventArgs e)
-    {
-        if (int.TryParse(ElevatorSpeedInput.Text, out int speed))
-        {
-            var elevators = _elevatorSystemFacade.GetElevators();
-            foreach (var elevator in elevators)
-            {
-                _elevatorSystemFacade.Configuration.SetSpeed(elevator.Id, speed);
-                elevator.UpdateSpeed(speed);
-            }
-        }
-    }
-
-    private void ElevatorSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ElevatorSelector.SelectedIndex >= 0)
-        {
-            var elevator = _elevatorSystemFacade.GetElevators().FirstOrDefault(ev => ev.Id == ElevatorSelector.SelectedIndex);
-            if (elevator != null)
-            {
-                ElevatorSpeedInput.Text = elevator.Speed.ToString();
-            }
-        }
-    }
-
-    private void UpdateLabels()
-    {
-        ElevatorCountLabel.Text = $"Ilość wind: {_elevatorSystemFacade.Configuration.NumberOfElevators}";
-        FloorCountLabel.Text = $"Ilość pięter: {_elevatorSystemFacade.Configuration.NumberOfFloors}";
-    }
 }

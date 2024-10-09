@@ -1,167 +1,133 @@
-﻿using System.Collections.Concurrent;
-using EvelatorSimulator.Config;
-using EvelatorSimulator.Passenger;
-
-namespace EvelatorSimulator.Model;
-
-public class Elevator: IElevator
+﻿namespace ElevatorSimulator.Model
 {
-    public int Id { get; }
-    public int CurrentFloor { get; private set; }
-    public ElevatorStatus Status { get; private set; }
-    public int Speed { get; set; }
-    private int Capacity { get; set; }
-    private List<Passenger> Passengers { get; } = new List<Passenger>();
-
-    private BlockingCollection<int> _floorRequests = new BlockingCollection<int>();
-    private CancellationTokenSource _cts;
-    private Task _elevatorTask;
-    
-    private readonly IPassengerService _passengerService;
-    private readonly IConfigurationService _configurationService;
-
-    public Elevator(int id, int speed, int capacity, IPassengerService passengerService, IConfigurationService configurationService)
+    public enum ElevatorStatus
     {
-        Id = id;
-        Speed = speed;
-        Capacity = capacity;
-        CurrentFloor = 0;
-        Status = ElevatorStatus.Idle;
-
-        _passengerService = passengerService;
-        _configurationService = configurationService;
+        Idle,
+        MovingUp,
+        MovingDown,
+        Waiting
     }
 
-    public void Start()
+    public class Elevator : IElevator
     {
-        _cts = new CancellationTokenSource();
-        _elevatorTask = Task.Run(() => ProcessRequestsAsync(_cts.Token));
-    }
+        public int Id { get; }
+        public int CurrentFloor { get; private set; }
+        public ElevatorStatus Status { get; private set; }
+        public int Speed { get; private set; } // Prędkość windy (piętra na sekundę)
 
-    public void Stop()
-    {
-        if (_cts != null && !_cts.IsCancellationRequested)
+        private SortedSet<int> _targetFloors = new SortedSet<int>();
+        private CancellationTokenSource _cts;
+        private Task _elevatorTask;
+
+        // Zdarzenie do logowania
+        public event EventHandler<string> ElevatorLog;
+
+        public Elevator(int id, int speed)
         {
-            _cts.Cancel();
+            Id = id;
+            Speed = speed;
+            CurrentFloor = 0;
+            Status = ElevatorStatus.Idle;
         }
 
-        try
+        public void Start()
         {
-            _elevatorTask?.Wait();
+            _cts = new CancellationTokenSource();
+            _elevatorTask = Task.Run(() => RunAsync(_cts.Token));
         }
-        catch (AggregateException ae)
-        {
-            ae.Handle(ex => ex is TaskCanceledException);
-        }
-    }
 
-    public void AddFloorRequest(int floor)
-    {
-        _floorRequests.Add(floor);
-    }
-    
-    private async Task ProcessRequestsAsync(CancellationToken token)
-    {
-        try
+        public void Stop()
         {
-            foreach (var targetFloor in _floorRequests.GetConsumingEnumerable(token))
+            if (_cts != null && !_cts.IsCancellationRequested)
             {
-                if (token.IsCancellationRequested)
+                _cts.Cancel();
+            }
+
+            try
+            {
+                _elevatorTask?.Wait();
+            }
+            catch (AggregateException ae)
+            {
+                ae.Handle(ex => ex is TaskCanceledException);
+            }
+        }
+
+        public void AddFloorRequest(int floor)
+        {
+            lock (_targetFloors)
+            {
+                _targetFloors.Add(floor);
+                Log($"Winda {Id}: Dodano żądanie piętra {floor}");
+            }
+        }
+
+        private async Task RunAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                int? nextFloor = null;
+                lock (_targetFloors)
                 {
-                    break;
+                    if (_targetFloors.Count > 0)
+                    {
+                        nextFloor = GetNextFloor();
+                        _targetFloors.Remove(nextFloor.Value);
+                    }
                 }
-                await MoveToFloorAsync(targetFloor, token);
+
+                if (nextFloor.HasValue)
+                {
+                    await MoveToFloorAsync(nextFloor.Value, token);
+                }
+                else
+                {
+                    Status = ElevatorStatus.Idle;
+                    await Task.Delay(500, token);
+                }
             }
         }
-        catch (OperationCanceledException)
-        {
-            // Handle task cancellation
-        }
-        finally
-        {
-            // Clean up resources if needed
-        }
-    }
 
-    public async Task MoveToFloorAsync(int targetFloor, CancellationToken token)
-    {
-        Status = targetFloor > CurrentFloor ? ElevatorStatus.MovingUp : ElevatorStatus.MovingDown;
-
-        while (CurrentFloor != targetFloor)
+        private int GetNextFloor()
         {
-            if (token.IsCancellationRequested)
+            // Możesz zaimplementować własną logikę wyboru następnego piętra
+            return _targetFloors.Min;
+        }
+
+        private async Task MoveToFloorAsync(int targetFloor, CancellationToken token)
+        {
+            Status = targetFloor > CurrentFloor ? ElevatorStatus.MovingUp : ElevatorStatus.MovingDown;
+            Log($"Winda {Id}: Rozpoczyna ruch z piętra {CurrentFloor} na piętro {targetFloor}");
+
+            while (CurrentFloor != targetFloor)
             {
-                break;
+                if (token.IsCancellationRequested) break;
+
+                // Symulacja czasu potrzebnego na przemieszczenie się między piętrami
+                await Task.Delay(1000 / Speed, token);
+
+                CurrentFloor += Status == ElevatorStatus.MovingUp ? 1 : -1;
+                Log($"Winda {Id}: Obecne piętro {CurrentFloor}");
             }
-            CurrentFloor += Status == ElevatorStatus.MovingUp ? 1 : -1;
-            await Task.Delay(1000 / Speed, token);
+
+            Status = ElevatorStatus.Waiting;
+            Log($"Winda {Id}: Dotarła na piętro {CurrentFloor}");
+
+            // Symulacja czasu otwierania/zamykania drzwi
+            await Task.Delay(1000, token);
+
+            Status = ElevatorStatus.Idle;
         }
 
-        Status = ElevatorStatus.Waiting;
-        await Task.Delay(1500, token); // Wait at the floor
-        UnloadPassengersAtCurrentFloor();
-        LoadPassengersAtCurrentFloor();
-
-        Status = ElevatorStatus.Idle;
-    }
-
-    private void UnloadPassengersAtCurrentFloor()
-    {
-        var passengersToUnload = Passengers.Where(p => p.DestinationFloor == CurrentFloor).ToList();
-        foreach (var passenger in passengersToUnload)
+        private void Log(string message)
         {
-            Passengers.Remove(passenger);
+            ElevatorLog?.Invoke(this, message);
         }
-    }
 
-    private void LoadPassengersAtCurrentFloor()
-    {
-        var passengersAtFloor = _passengerService.GetPassengersAtFloor(CurrentFloor);
-        var passengersToLoad = passengersAtFloor.Take(Capacity - Passengers.Count).ToList();
-        foreach (var passenger in passengersToLoad)
+        public void UpdateSpeed(int newSpeed)
         {
-            Passengers.Add(passenger);
+            Speed = newSpeed;
+            Log($"Winda {Id}: Zmieniono prędkość na {Speed}");
         }
-        _passengerService.RemovePassengersFromFloor(CurrentFloor, passengersToLoad);
     }
-
-    public List<Passenger> GetPassengers()
-    {
-        return Passengers;
-    }
-
-    public void LoadPassengers(List<Passenger> passengers)
-    {
-        Passengers.AddRange(passengers.Take(Capacity - Passengers.Count));
-    }
-
-    public void UnloadPassengers()
-    {
-        Passengers.Clear();
-    }
-    
-    public void UpdateSpeed(int newSpeed)
-    {
-        Speed = newSpeed;
-    }
-}
-
-public enum ElevatorStatus
-{
-    Idle,      // Winda stoi
-    Moving,    // Winda w ruchu
-    Waiting,    // Winda czeka na piętrze
-    MovingUp,
-    MovingDown,
-    LoadingPassengers,
-    UnloadingPassengers
-}
-
-public class Passenger
-{
-    public int Id { get; set; }
-    public int CurrentFloor { get; set; }
-    public int DestinationFloor { get; set; }
-    public int TimeToLoad { get; set; } // czas wsiadania do windy
-    public int TimeToUnload { get; set; } // czas wysiadania z windy
 }

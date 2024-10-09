@@ -1,57 +1,76 @@
-﻿using System.Collections.Concurrent;
-using EvelatorSimulator.Model;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using ElevatorSimulator.Model;
+using ElevatorSimulator.Strategy;
 
-namespace EvelatorSimulator.Controller;
-
-public class ElevatorController : IElevatorController
+namespace ElevatorSimulator.Controller
 {
-    private List<IElevator> _elevators = new List<IElevator>();
-    private BlockingCollection<int> _floorRequests = new BlockingCollection<int>();
-
-    public ElevatorController()
+    public class ElevatorController : IElevatorController
     {
-        Task.Run(() => ProcessFloorRequestsAsync());
-    }
+        private List<IElevator> _elevators = new List<IElevator>();
+        private BlockingCollection<ElevatorRequest> _requests = new BlockingCollection<ElevatorRequest>();
 
-    public void RegisterElevator(IElevator elevator)
-    {
-        _elevators.Add(elevator);
-    }
-
-    public void RequestElevator(int floor)
-    {
-        _floorRequests.Add(floor);
-    }
-
-    private async Task ProcessFloorRequestsAsync()
-    {
-        foreach (var floor in _floorRequests.GetConsumingEnumerable())
+        public event EventHandler<TimeSpan> ElevatorRequestCompleted;
+        
+        private IElevatorAssignmentStrategy _assignmentStrategy;
+        
+        public ElevatorController(IElevatorAssignmentStrategy assignmentStrategy)
         {
-            var selectedElevator = SelectElevatorForRequest(floor);
-            if (selectedElevator != null)
+            _assignmentStrategy = assignmentStrategy;
+            Task.Run(() => ProcessRequestsAsync());
+        }
+        
+        public void RegisterElevator(IElevator elevator)
+        {
+            _elevators.Add(elevator);
+        }
+
+        public void AddElevatorRequest(int floor)
+        {
+            _requests.Add(new ElevatorRequest(floor));
+        }
+        
+        private async Task ProcessRequestsAsync()
+        {
+            foreach (var request in _requests.GetConsumingEnumerable())
             {
-                selectedElevator.AddFloorRequest(floor);
-            }
-            else
-            {
-                // All elevators are busy, re-enqueue the request
-                _floorRequests.Add(floor);
-                await Task.Delay(1000); // Wait before retrying
+                var selectedElevator = SelectElevatorForRequest(request.Floor);
+                if (selectedElevator != null)
+                {
+                    selectedElevator.AddFloorRequest(request.Floor);
+
+                    // Rejestrujemy czas oczekiwania
+                    TimeSpan waitTime = DateTime.Now - request.RequestTime;
+                    ElevatorRequestCompleted?.Invoke(this, waitTime);
+                }
+                else
+                {
+                    // Jeśli żadna winda nie jest dostępna, możemy odłożyć żądanie na później
+                    await Task.Delay(500);
+                    _requests.Add(request);
+                }
             }
         }
-    }
 
-    private IElevator SelectElevatorForRequest(int floor)
-    {
-        // Implement your assignment algorithm here
-        return _elevators
-            .Where(e => e.Status == ElevatorStatus.Idle)
-            .OrderBy(e => Math.Abs(e.CurrentFloor - floor))
-            .FirstOrDefault();
-    }
-
-    public List<IElevator> GetElevators()
-    {
-        return _elevators;
+        private IElevator SelectElevatorForRequest(int floor)
+        {
+            return _assignmentStrategy.SelectElevator(_elevators.ToList(), floor);
+        }
+        
+        public List<IElevator> GetElevators()
+        {
+            return _elevators;
+        }
+        
+        public IEnumerable<int> GetPendingRequests()
+        {
+            lock (_requests)
+            {
+                return _requests.Select(r => r.Floor).ToList();
+            }
+        }
     }
 }

@@ -1,10 +1,10 @@
-﻿using EvelatorSimulator.Model;
+﻿using ElevatorSimulator.Model;
 
-namespace EvelatorSimulator.Controller;
+namespace ElevatorSimulator.Controller;
 
 public interface IElevatorController
 {
-    void RequestElevator(int floor);
     void RegisterElevator(IElevator elevator);
+    void AddElevatorRequest(int floor);
     List<IElevator> GetElevators();
 }
